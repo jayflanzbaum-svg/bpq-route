@@ -28,7 +28,7 @@ Jupiter FL > Key West FL
 11  L     Southard St                  <.1
 12  END   arrive                       <.1
 1-12 of 12 - end of route
-Map: OSM Florida 2026-09-24 via GraphHopper
+Map: OSM USA 2026-09-24 via GraphHopper
 ```
 
 ## Commands
@@ -86,8 +86,9 @@ The app itself carries no map. It asks two services:
 | OffgridAI gazetteer | 8991 | names to coordinates: `/geocode?q=Congress Ave, Delray Beach`, plus `/near` and `/reverse` |
 
 **Easiest:** an [OffgridAI](https://github.com/jayflanzbaum-svg/OffgridAI) box.
-Its `docker-compose.yml` runs both from one OpenStreetMap state extract
-(`routing/` in that repo: config, gazetteer builder, `refresh-map.sh`).
+Its `docker-compose.yml` runs both from one OpenStreetMap extract - the whole
+USA by default, 22 min to import on that box (`routing/` in that repo: config,
+gazetteer builder, `refresh-map.sh`).
 Point `engine.graphhopper_url` / `engine.gazetteer_url` at it and you are done.
 
 **Without OffgridAI:** GraphHopper is a single Java jar and the gazetteer is a
@@ -156,9 +157,9 @@ Give it `host:port` as the first argument for a non-default listen port.
   or the gazetteer. Check the two URLs in `route_config.json` from a browser on
   the node PC: `http://<box>:8989/health` should say `OK` and
   `http://<box>:8991/health` should return JSON with the map date.
-- **`One end is outside the map this node carries`** — the extract is one
-  state. Neighbouring-state trips need a bigger extract on the box
-  (`routing/refresh-map.sh` in OffgridAI takes any Geofabrik URL).
+- **`One end is outside the map this node carries`** — the box's extract does
+  not cover that point. OffgridAI ships the whole USA (`routing/refresh-map.sh us`);
+  a box built on one state only knows that state.
 - **`No drivable route between those two points`** — usually an island or a
   private road. Try the nearest town or a street instead.
 - **A wall of red `Traceback` ending in `JSONDecodeError`** — a typo in

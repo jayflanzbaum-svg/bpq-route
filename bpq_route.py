@@ -343,7 +343,10 @@ class Engine:
 
     def map_line(self) -> str:
         m = self.meta()
-        region = (m.get("region_file") or "region").split("-latest")[0].replace("-", " ").title()
+        # "florida-latest.osm.pbf" / "us-20260924.osm.pbf" -> "Florida" / "USA"
+        region = re.sub(r"(-latest|-\d{8})?\.osm\.pbf$", "", m.get("region_file") or "region")
+        region = {"us": "USA", "us-south": "US South", "us-northeast": "US Northeast",
+                  "us-midwest": "US Midwest", "us-west": "US West"}.get(region, region.replace("-", " ").title())
         date = m.get("data_date", "?")
         return f"Map: OSM {region} {date}"
 
