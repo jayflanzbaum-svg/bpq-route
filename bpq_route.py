@@ -461,7 +461,8 @@ def short_place(item: Dict) -> str:
     if item.get("kind") == "place":
         return f"{item['name']} {item.get('state', '')}".strip()
     city = item.get("city") or ""
-    return f"{item['name']}, {city}" if city else item["name"]
+    # A long landmark name stands on its own; adding the town only folds the title.
+    return f"{item['name']}, {city}" if city and len(item["name"]) <= 26 else item["name"]
 
 
 class RouteDoc:
