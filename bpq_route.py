@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-BPQ "ROUTE" application (RF-first)
+BPQ "DIRECTIONS" application (RF-first)
+
+The node command is DIRECTIONS (BPQ already has ROUTES built in, and ROUTE
+read as that); inside the app a trip is still asked for with ROUTE.
 
 Offline driving directions, place lookup and "what is near" for BPQ32 packet
 nodes, in the style of WX/RPTSRCH:
@@ -11,7 +14,7 @@ nodes, in the style of WX/RPTSRCH:
   POI / zip lookup) that OffgridAI hosts on the LAN; nothing here needs the
   internet. Both are HTTP JSON; see README.md for running them yourself.
 - Output is built for a 42-column packet terminal: a route is a table of
-  numbered turns, about 40 bytes a row, paged with MORE.
+  numbered turns, about 40 bytes a row, paged with MORE / BACK / TOP / ALL.
 - YAPP sends the last route to the user's PC as a .txt (sender ported from WX).
 
 Commands:
@@ -21,7 +24,8 @@ Commands:
   WHERE <place>        -> grid, lat/lon, distance + bearing from HOME
   NEAR [<place>]       -> nearest towns / landmarks to place (or HOME)
   HOME <zip|grid|place>-> set HOME for this callsign
-  MORE                 -> next page of the current route
+  MORE / BACK          -> next / previous page of the current route
+  TOP / ALL            -> first page / the rest of the route at once
   YAPP                 -> send the current route to your PC by YAPP
   HELP                 -> show commands
   Q / BYE / EXIT / QUIT / NODE -> exit
@@ -66,7 +70,7 @@ DEFAULT_CONFIG = {
         "user_db_file": "route_users.json"
     },
     "output_dir": "C:\\Users\\Jason\\AppData\\Roaming\\BPQ32\\BPQMailChat\\Files",
-    "banner": "SFLDIGI ROUTE SERVICE - N4SFL NODE",
+    "banner": "SFLDIGI DIRECTIONS SERVICE - N4SFL NODE",
     "file_max_age_hours": 24,
     "display": {
         "_comment": "Fold output at this many columns (mobile packet clients are ~43); 0 disables. menu_every_reply shows the menu after every reply. steps_per_page = route rows per screen before MORE.",
@@ -92,7 +96,8 @@ HELP_TEXT = (
     "  NEAR            same, around HOME\r\n"
     "  HOME <place>    set HOME (zip, grid or\r\n"
     "                  place name)\r\n"
-    "  MORE            next page of a route\r\n"
+    "  MORE / BACK     next / previous page\r\n"
+    "  TOP / ALL       first page / the rest\r\n"
     "  YAPP            send route to your PC\r\n"
     "  HELP            show commands\r\n"
     "  Q / BYE / NODE  exit\r\n"
@@ -111,6 +116,11 @@ HELP_TEXT = (
 EXIT_WORDS = ("Q", "QUIT", "EXIT", "BYE", "NODE")
 HELP_WORDS = ("HELP", "?")
 MORE_WORDS = ("MORE", "M", "NEXT")
+# Route paging beyond MORE; not (yet) house vocabulary, so only this app has them.
+BACK_WORDS = ("BACK", "B", "PREV")
+TOP_WORDS = ("TOP", "FIRST")
+ALL_WORDS = ("ALL",)
+ROUTE_VERBS = ("ROUTE", "RT", "DIRECTIONS", "DIR")
 
 MI = 1609.344
 
@@ -323,7 +333,8 @@ class Engine:
     def route(self, a: Dict, b: Dict) -> Dict:
         params = [("point", f"{a['lat']:.5f},{a['lon']:.5f}"), ("point", f"{b['lat']:.5f},{b['lon']:.5f}"),
                   ("profile", "car"), ("locale", "en"), ("instructions", "true"),
-                  ("calc_points", "true"), ("points_encoded", "true")]
+                  ("calc_points", "true"), ("points_encoded", "true"),
+                  ("details", "road_class"), ("details", "road_class_link")]
         d = self._get(f"{self.gh}/route?{urllib.parse.urlencode(params)}")
         paths = d.get("paths") or []
         if not paths:
@@ -419,6 +430,28 @@ def road_label(ins: Dict) -> str:
     return "unnamed rd"
 
 
+def road_kind(ins: Dict, details: Dict) -> str:
+    """What an unnamed step is, from the road class GraphHopper returns alongside
+    the instructions: 'ramp' (a motorway/trunk link, e.g. between SR-706 and the
+    Turnpike), 'svc rd' (parking lots, driveways - where a grid-centre start lands),
+    else 'unnamed rd'. Majority by points over the step's interval."""
+    a, b = (ins.get("interval") or (0, 0))[:2]
+
+    def majority(key: str):
+        tally: Dict = {}
+        for s, e, v in details.get(key) or []:
+            n = min(b, e) - max(a, s)
+            if n > 0:
+                tally[v] = tally.get(v, 0) + n
+        return max(tally, key=tally.get) if tally else None
+
+    if majority("road_class_link"):
+        return "ramp"
+    if majority("road_class") == "service":
+        return "svc rd"
+    return "unnamed rd"
+
+
 def turn_code(ins: Dict) -> str:
     sign = ins.get("sign", 0)
     if sign in (6, -6):
@@ -426,16 +459,28 @@ def turn_code(ins: Dict) -> str:
     return TURN.get(sign, "GO")
 
 
-def compress_steps(instructions: List[Dict]) -> List[Tuple[str, str, float]]:
-    """(turn, road, metres) per row. Consecutive short unnamed steps - parking
-    lots and service roads at either end of a trip - become one 'unnamed rds'
-    row, because five rows of '-' cost airtime and say nothing."""
+UNNAMED = ("unnamed rd", "svc rd", "ramp")
+
+
+def compress_steps(instructions: List[Dict], details: Optional[Dict] = None) -> List[Tuple[str, str, float]]:
+    """(turn, road, metres) per row. An unnamed step is called what it is (ramp,
+    svc rd) when the road class says so. Consecutive short unnamed steps - parking
+    lots, service roads, ramp splits - become one row ('svc rds', or 'ramp' if a
+    ramp is among them), because five rows of '-' cost airtime and say nothing."""
     out: List[Tuple[str, str, float]] = []
     for ins in instructions:
         turn, road, dist = turn_code(ins), road_label(ins), float(ins.get("distance", 0.0))
-        if road == "unnamed rd" and dist < 0.25 * MI and out and out[-1][1] in ("unnamed rd", "unnamed rds"):
+        if road == "unnamed rd" and details:
+            road = road_kind(ins, details)
+        prev = out[-1][1].rstrip("s") if out else ""
+        if road in UNNAMED and prev in UNNAMED and dist < 0.25 * MI:
+            # A ramp is the useful word in a run; otherwise one plural row.
             pturn, _, pdist = out[-1]
-            out[-1] = (pturn, "unnamed rds", pdist + dist)
+            if "ramp" in (road, prev):
+                merged = "ramp"
+            else:
+                merged = (road if road == prev else "unnamed rd") + "s"
+            out[-1] = (pturn, merged, pdist + dist)
             continue
         out.append((turn, road, dist))
     return out
@@ -476,32 +521,52 @@ class RouteDoc:
                       f"{short_place(a)} > {short_place(b)}\r\n")
         self.header = " #  TURN  ROAD                       MI\r\n"
         self.rows: List[str] = []
-        for i, (turn, road, dist) in enumerate(compress_steps(path.get("instructions", [])), 1):
+        for i, (turn, road, dist) in enumerate(compress_steps(path.get("instructions", []), path.get("details")), 1):
             self.rows.append(f"{i:>2}  {turn:<4}  {fit(road, 25):<25}  {fmt_mi(dist):>5}\r\n")
         self.footer = map_line + " via GraphHopper\r\n"
         self.page = 0
         self.pages = max(1, math.ceil(len(self.rows) / STEPS_PER_PAGE))
 
-    def render_page(self, page: int) -> str:
+    def nav_line(self) -> str:
+        """What can be done from the page on screen - only what applies there,
+        so a one-page route is not offered MORE it cannot use."""
+        more, back = self.page + 1 < self.pages, self.page > 0
+        opts = (["MORE"] if more else []) + (["BACK"] if back else []) + \
+               (["ALL"] if more else ["TOP"] if back else []) + ["YAPP", "HELP", "QUIT"]
+        return " | ".join(opts) + "\r\n"
+
+    def render_page(self, page: int, upto: Optional[int] = None) -> str:
+        """One page, or pages `page`..`upto` as one screen (ALL)."""
         page = max(0, min(page, self.pages - 1))
-        self.page = page
-        lo, hi = page * STEPS_PER_PAGE, min(len(self.rows), (page + 1) * STEPS_PER_PAGE)
+        last = page if upto is None else max(page, min(upto, self.pages - 1))
+        self.page = last
+        lo, hi = page * STEPS_PER_PAGE, min(len(self.rows), (last + 1) * STEPS_PER_PAGE)
         n = len(self.rows)
         out = (self.title if page == 0 else "") + self.header + "".join(self.rows[lo:hi])
         if hi < n:
             out += f"{lo + 1}-{hi} of {n} - MORE for {min(STEPS_PER_PAGE, n - hi)} more\r\n"
         else:
             out += f"{lo + 1}-{hi} of {n} - end of route\r\n" + self.footer
-        return out
+        return out + self.nav_line()
 
     def next_page(self) -> Optional[str]:
         if self.page + 1 >= self.pages:
             return None
         return self.render_page(self.page + 1)
 
+    def prev_page(self) -> Optional[str]:
+        if self.page == 0:
+            return None
+        return self.render_page(self.page - 1)
+
+    def rest(self) -> Optional[str]:
+        if self.page + 1 >= self.pages:
+            return None
+        return self.render_page(self.page + 1, upto=self.pages - 1)
+
     def full_text(self, banner: str) -> str:
         return (self.title + self.header + "".join(self.rows) + self.footer +
-                f"\r\n{banner}\r\nGenerated on demand by the ROUTE app.\r\n")
+                f"\r\n{banner}\r\nGenerated on demand by the DIRECTIONS app.\r\n")
 
 
 def where_text(item: Dict, home: Optional[Dict]) -> str:
@@ -765,7 +830,7 @@ class AppContext:
         self.userdb = UserDB(cfg["storage"]["user_db_file"])
         self.engine = Engine(cfg)
         self.output_dir = Path(cfg["output_dir"])
-        self.banner = cfg.get("banner", "BPQ ROUTE SERVICE")
+        self.banner = cfg.get("banner", "BPQ DIRECTIONS SERVICE")
 
 
 class Session:
@@ -937,7 +1002,24 @@ async def read_line(reader: asyncio.StreamReader, timeout: Optional[float] = Non
         return None
     if not raw:
         return None
-    return raw.decode("utf-8", "ignore").strip()
+    text = raw.decode("utf-8", "ignore")
+    if re.search(r"[\x00-\x08\x0b-\x1f\x7f]", text.rstrip("\r\n")):
+        print(f"[EDIT] raw input {text.rstrip(chr(13) + chr(10))!r}")
+    return apply_line_edits(text).strip()
+
+
+def apply_line_edits(s: str) -> str:
+    """Apply backspace / DEL the way a terminal would, then drop other control
+    characters. A phone client that re-flows a word at its wrap column sends
+    'neptune' BS BS 'ne'; kept raw, that searched for 'neptunene'."""
+    out: List[str] = []
+    for ch in s:
+        if ch in "\x08\x7f":
+            if out:
+                out.pop()
+        elif ch >= " " or ch == "\t":
+            out.append(ch)
+    return "".join(out)
 
 
 async def prompt_for_home(s: Session) -> bool:
@@ -972,7 +1054,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         print(f"[CONN] {callsign}")
         s = Session(ctx, reader, writer, callsign)
 
-        send(writer, "Welcome to ROUTE - offline driving directions.\r\n")
+        send(writer, "Welcome to DIRECTIONS - offline driving\r\ndirections and place lookup.\r\n")
         if not s.home:
             if not await prompt_for_home(s):
                 return
@@ -1009,7 +1091,7 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     reply = await s.cmd_pick(n)
                     send(writer, reply if reply is not None else f"'{line.strip()[:20]}' is not one of the numbers.\r\n")
 
-                elif verb == "ROUTE" or verb == "RT":
+                elif verb in ROUTE_VERBS:
                     s.pending = None
                     send(writer, await s.cmd_route(arg))
 
@@ -1025,13 +1107,20 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
                     s.pending = None
                     send(writer, await s.cmd_home(arg))
 
-                elif up in MORE_WORDS:
+                elif up in MORE_WORDS + BACK_WORDS + TOP_WORDS + ALL_WORDS:
                     s.pending = None
                     if not s.route:
                         send(writer, "No route to page. ROUTE <from> TO <to> first.\r\n")
+                    elif up in MORE_WORDS:
+                        send(writer, s.route.next_page() or (
+                            "End of route. BACK or TOP to page up.\r\n" if s.route.pages > 1
+                            else "That is the whole route.\r\n"))
+                    elif up in BACK_WORDS:
+                        send(writer, s.route.prev_page() or "Already at the first page.\r\n")
+                    elif up in TOP_WORDS:
+                        send(writer, s.route.render_page(0))
                     else:
-                        nxt = s.route.next_page()
-                        send(writer, nxt if nxt else "End of route already shown.\r\n")
+                        send(writer, s.route.rest() or "End of route already shown.\r\n")
 
                 elif up in ("YAPP", "DL", "YAPP TXT", "DL TXT"):
                     s.pending = None

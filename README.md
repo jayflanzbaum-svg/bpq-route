@@ -5,7 +5,7 @@ packet radio nodes. No internet involved: the map is an OpenStreetMap extract
 served by GraphHopper and a small gazetteer on a box on your LAN (OffgridAI
 ships both; see [Where the map comes from](#where-the-map-comes-from)).
 
-Users connect to your node, type `ROUTE`, set their HOME once (zip or grid),
+Users connect to your node, type `DIRECTIONS`, set their HOME once (zip or grid),
 and get a turn list built for a 42-column packet terminal: about 40 bytes a
 turn, a 240-mile trip in a dozen lines.
 
@@ -41,7 +41,8 @@ Map: OSM USA 2026-09-24 via GraphHopper
 | `WHERE <place>` | grid square, lat/lon, distance and bearing from HOME |
 | `NEAR <place>` / `NEAR` | nearest towns and landmarks (hospitals, fire, schools, parks, towers...) |
 | `HOME <place>` | set HOME for your callsign; remembered between connects |
-| `MORE` | next page of a long route (14 turns a screen) |
+| `MORE` / `BACK` | next / previous page of a long route (14 turns a screen) |
+| `TOP` / `ALL` | first page / the rest of the route in one screen |
 | `YAPP` | send the current route to your PC as a `.txt` (YAPP / YappC) |
 | `HELP`, `Q` | the usual |
 
@@ -130,15 +131,17 @@ gazetteer from a Geofabrik extract, and run the two servers on the node PC
    In the **APPLICATIONS** section (adjust the number, HOST index and your
    callsign/alias):
    ```
-   APPLICATION 7,ROUTE,C 7 HOST 0 S TRANS,MYCALL-16,NODERT,255
+   APPLICATION 7,DIRECTIONS,C 7 HOST 0 S TRANS,MYCALL-16,NODERT,255
    ```
+   The node command is `DIRECTIONS`, not `ROUTE`: BPQ has a built-in `ROUTES`,
+   and `ROUTE` read as that. Inside the app a trip is still `ROUTE <from> TO <to>`.
    `C 7` is your Telnet port; `HOST 0` the CMDPORT position; `S` returns the
    user to the node when the app exits; **`TRANS` is required for YAPP**
    (binary mode so the transfer bytes pass through untouched). BPQ sends the
    connecting callsign to the app automatically.
 7. **Restart BPQ32, start the app** (`python bpq_route.py`, leave the window
    open, or put that line in a `.bat` and add it to startup). Connect to your
-   node and type `ROUTE`.
+   node and type `DIRECTIONS`.
 
 ## Testing without a node
 
