@@ -83,7 +83,8 @@ CONFIG_FILE = "route_config.json"
 
 MENU_LINE = ("<ENTER> | ROUTE <from> TO <to>\r\n"
              "ROUTE <to> | WHERE <place> | NEAR <place>\r\n"
-             "HOME <zip> | MORE | YAPP | HELP | QUIT\r\n")
+             "HOME <zip> | MORE | YAPP\r\n"
+             "[?=Commands, NODE=Back to Node]\r\n")
 
 # Two columns inside 42: a 16-wide command field, then the gloss.
 HELP_TEXT = (
